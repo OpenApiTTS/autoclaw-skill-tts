@@ -150,7 +150,8 @@ def first_voice():
     items = (data or {}).get("list") or []
     if not items:
         sys.exit("错误：账号下没有任何音色，请先用 upload-voice 上传参考音频")
-    return items[0]["roleId"]
+    # 接口返回字段是 audioId（不是 roleId）；兼容老响应保留 roleId 回退
+    return items[0].get("audioId") or items[0]["roleId"]
 
 
 def download(url, out_path):
@@ -178,7 +179,7 @@ def cmd_voices(args):
         return
     print(f"共 {data.get('total', len(items))} 个音色：")
     for item in items:
-        print(f"  {item.get('roleId')}\t{item.get('name', '')}")
+        print(f"  {item.get('audioId') or item.get('roleId')}\t{item.get('name', '')}")
 
 
 def cmd_upload_voice(args):

@@ -8,7 +8,7 @@ description: Use when the task needs text-to-speech / voice cloning / audio deno
 TTS / 声音克隆 / 音频降噪 的 HTTP 接口。文本进，音频 URL 出。
 
 - **Base URL**: `https://openapi.anyvoice.cn`
-- **鉴权**: 每个请求带 header `sign: <API_KEY>`（也可用 query `?sign=`，但优先用 header）。API Key 是企业用户的密钥，向平台申请；过期或未开通 API 会返回「sign无效」/「企业会员已过期」。
+- **鉴权**: 每个请求带 header `sign: <API_KEY>`（也可用 query `?sign=`，但优先用 header）。API Key 是旗舰会员的密钥，向平台申请；过期或未开通 API 会返回「sign无效」/「旗舰会员已过期」。
 - **机读 spec**: `GET /api/third/openapi.json`（无需鉴权，OpenAPI 3.0，可直接导入 Coze / Dify / 飞书等平台）。
 
 ## 通用响应格式
@@ -48,8 +48,8 @@ python3 scripts/tts.py upload-voice --file sample.wav --name "小王"
 
 合成一段语音的最短路径：
 
-1. `GET /api/third/reference/list` 拿到 `roleId`（音色 ID）
-2. `POST /api/third/tts/sync`，body 里 `audioId` = 上一步的 `roleId`
+1. `GET /api/third/reference/list` 拿到 `audioId`（声音模型 ID）
+2. `POST /api/third/tts/sync`，body 里 `audioId` = 上一步的 `audioId`
 3. 返回 `status=2` 时取 `voiceUrl` 即为音频地址
 
 若 `sync` 返回 `status=1`（超过 90 秒仍在处理），拿 `taskId` 去轮询 `GET /api/third/tts/result`。
@@ -57,7 +57,7 @@ python3 scripts/tts.py upload-voice --file sample.wav --name "小王"
 ```bash
 curl -X POST https://openapi.anyvoice.cn/api/third/tts/sync \
   -H "sign: $VOICE_API_KEY" -H "Content-Type: application/json" \
-  -d '{"content":"今天天气不错","audioId":"<roleId>","style":"2","speed":1.0,"targetSpeech":"mandarin"}'
+  -d '{"content":"今天天气不错","audioId":"<audioId>","style":"2","speed":1.0,"targetSpeech":"mandarin"}'
 ```
 
 ## 接口清单
@@ -77,8 +77,8 @@ curl -X POST https://openapi.anyvoice.cn/api/third/tts/sync \
 
 ```jsonc
 {
-  "content": "要合成的文本",   // 必填。长度受账号 requestCharLimit 限制，默认 5000 字符，超出 code=1001
-  "audioId": "音色ID",        // 必填，来自 /reference/list 的 roleId 或 /reference/upload 的 audioId
+  "content": "要合成的文本",   // 必填。长度有上限（按 UTF-8 字节计），超出 code=1001
+  "audioId": "声音模型ID",    // 必填，来自 /reference/list 或 /reference/upload 返回的 audioId
   "style":   "2",             // 必填，字符串！"1"=V2.0  "2"=V2.5(支持情绪)  "3"=方言/多语言
   "speed":   1.0,             // 选填，0.5~2.0，一位小数，默认 1.0
   "targetSpeech": "mandarin", // 选填但强烈建议传，见下方语言表
@@ -100,7 +100,7 @@ curl -X POST https://openapi.anyvoice.cn/api/third/tts/sync \
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/reference/list?page=1&pageSize=10` | 音色列表，返回 `list[].roleId / name / voicePath`，`pageSize` 最大 30 |
+| GET | `/reference/list?page=1&pageSize=10` | 声音模型列表（含接口上传的与网页端创建的），返回 `list[].audioId / name / describe`，`pageSize` 最大 30 |
 | POST | `/reference/upload` | multipart：`file`(音频) + `name`(必填) + `describe`(选填)，返回 `audioId` |
 | DELETE | `/reference/delete?audioId=` | 删除音色 |
 
@@ -162,7 +162,7 @@ Web 端情绪控制属专业会员能力；用企业 API Key 调本接口默认�
 
 ## 配额
 
-- 单次请求字符数：账号级配置，默认 **5000**，超出返回 `code=1001`
+- 单次请求文本长度：有上限，按 **UTF-8 字节**计（一个汉字 3 字节），额度随账号而定，超出返回 `code=1001` —— 超了就拆分分段合成
 - 并发/在途任务数：默认 **30**（账号可加量）
 - 列表类接口 `pageSize` 上限 30
 
