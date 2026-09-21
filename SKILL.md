@@ -1,6 +1,6 @@
 ---
 name: openapi
-description: Use when the task needs text-to-speech / voice cloning / audio denoise via this voice open API — synthesizing speech from text, listing or uploading voice clone models (音色/参考音频), emotion-controlled TTS, dialect & multilingual TTS, or denoising an audio file. Covers auth (sign header), all /api/third/* endpoints, parameter rules, and the polling workflow.
+description: Use when the task needs text-to-speech / voice cloning / audio denoise via this voice open API — synthesizing speech from text, listing or uploading voice clone models (音色/参考音频), emotion-controlled TTS, dialect & multilingual TTS, or denoising an audio file. Covers auth (sign header), all /api/third/* endpoints, parameter rules, the polling workflow, and how to troubleshoot poor synthesis results (mispronunciation, odd pauses, voice not matching, flat emotion) instead of blindly retrying.
 ---
 
 # OpenAPI (语音开放接口)
@@ -147,17 +147,17 @@ curl -X POST https://openapi.anyvoice.cn/api/third/tts/sync \
 - `genre: 1` — 情绪向量，用 `ext` 指定，8 个维度：`happy / angry / sad / afraid / disgusted / melancholic / surprised / calm`，各取值 `[0,1]`，可同时给多个。**传未知字段会直接报错**。
 - `genre: 2` — 情绪参考音频，先 `/file/uploadCustom` 拿文件名，填 `emotionPath`
 
-Web 端情绪控制属专业会员能力；用企业 API Key 调本接口默认可用，无需额外开通。
+Web 端情绪控制属专业会员能力；用旗舰会员 API Key 调本接口默认可用，无需额外开通。
 
 **targetSpeech（目标语言/方言）**：非必填但**推荐显式提交**。不传时服务端按文本自动判定，短文本或中英混排容易判错。
 
 - `mandarin` / `english`：style 1/2/3 都支持，可用情绪控制
 - `ja` / `es` / `ar`：style="2" 可用情绪控制；style="1" 会被升为 "3"
-- 其余 52 个（12 种中文方言 + 40 种独立语言）：**style 传 "3"**，不支持情绪控制
+- 其余（14 种中文方言 + 7 种民族语言 + 40 种独立语言）：**style 传 "3"**，不支持情绪控制
 - **枚举外的语言**：传枚举外的值会直接报错「暂不支持该语言」且任务不会创建。这种情况改为 `style="3"` 且 **完全不传 `targetSpeech`**，由方言/多语言模型按文本自行处理，常见语种都能正常合成。
 
 取值清单见同目录 `target-speech-enum.csv`（值 / 名称 / 说明三列）。注意该 csv 与
-`/api/third/openapi.json` 里的枚举都只收录了 57–59 个，而服务端能力表实际已支持 100+ 个语种，
+`/api/third/openapi.json` 里的枚举都只收录了 57 个，而服务端能力表实际已支持 100+ 个语种，
 **csv 里没有不代表不支持**，可直接试传；被拒时才按上面的办法回退。常用：`mandarin english yue nan sichuan northeast henan shaanxi ja ko es fr de ru pt it th vi id ms ar hi tr`。
 
 ## 配额
@@ -169,3 +169,27 @@ Web 端情绪控制属专业会员能力；用企业 API Key 调本接口默认�
 ## 轮询建议
 
 用 `/tts/create` 时，建议 2 秒一次轮询 `/tts/result`，直到 `status` 变为 2 或 3。`/tts/sync` 内部就是这个逻辑（2s 间隔、90s 上限），超时会带着 `taskId` 返回 `status=1`，此时继续用 `/tts/result` 兜底，不要重复创建任务。
+
+
+## 合成效果排查（结果不理想时必读）
+
+用户说「念错了 / 不像 / 太平淡 / 停顿奇怪」时，**不要用同一组参数反复重试**。
+先按下表定位原因，把对应建议**主动讲给用户**，等用户改完文本或重新给参考音频，再调一次接口。
+
+| 现象 | 告诉用户怎么改 | 接口侧怎么配合 |
+|---|---|---|
+| 某个字念错、多音字读错 | 把生僻字/多音字换成**同音字**；数字、单位、英文缩写改成汉字写法（「2026 年」→「二零二六年」，「3kg」→「三公斤」） | 只改 `content`，其余参数不动，重调 `/tts/sync` |
+| 停顿生硬、断句奇怪 | 在异常停顿处**增删标点**（逗号短停、句号长停），长句拆成短句 | 只改 `content`；长文按 150–250 字分段顺序合成 |
+| 念出了奇怪的符号 | 删掉表情符号、Markdown 标记、括号注释、连续空行等**不该念出来的字符** | 提交前先清洗 `content` |
+| 音色不像本人 | 换一段**底噪更小、空白更少**的参考音频，3–10 秒清晰干声最佳 | 先 `/denoise/upload` 降噪，再 `/reference/upload` 重建音色 |
+| 语气太平、没有情绪 | 告诉用户可以直接指定情绪，不必在参考音频里演 | `style="2"` + `genre=1` 传 `ext` 情绪向量，或 `genre=2` 传 `emotionPath` |
+| 语速不合适 | 问清想要的快慢再整体调整 | `speed` 0.5–2.0（方言/多语言链路实际上限 1.5） |
+| 方言/外语读成了普通话 | 确认目标语种，提醒一段文本只写一种语言 | 显式传 `targetSpeech`，方言与小语种配 `style="3"` |
+
+**参考音频怎么录才像**：3–60 秒、推荐 3–10 秒；单人、清晰、无背景音乐与混响；底噪越小、空白越少越像；
+嘈杂录音先走 `/denoise/upload` 降噪再克隆；用平时说话的状态录，不要刻意表演——情绪交给 `style="2"` 的参数控制。
+
+**文本怎么写才自然**：一段只写一种语言；长文按自然段切 150–250 字，用同一个 `audioId` 顺序合成再拼接，
+音色和语气才连贯；中英混排时务必显式传 `targetSpeech`。
+
+更细的说明见所接入平台的开发者文档「配音技巧 / 效果调优」一节。
