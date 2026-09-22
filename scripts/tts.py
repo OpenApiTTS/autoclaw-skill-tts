@@ -8,6 +8,7 @@
   python3 tts.py tts --text "今天天气不错" -o out.mp3
   python3 tts.py tts --text "巴适得很" --lang sichuan -o out.mp3
   python3 tts.py tts --text "太好啦" --emotion happy=0.8 -o out.mp3
+  python3 tts.py design --text "欢迎光临" --describe "沉稳低沉的男声" -o out.mp3
   python3 tts.py denoise --file noisy.wav -o clean.wav
 
 设计原则：调用方只管"说什么、用谁的声音、什么语言、什么情绪"，
@@ -248,6 +249,56 @@ def cmd_tts(args):
         print(url)
 
 
+def cmd_design(args):
+    """声音设计：不用参考音频，直接描述或选方言参数生成音色并合成。"""
+    text = args.text
+    if text == "-":
+        text = sys.stdin.read()
+    text = text.strip()
+    if not text:
+        sys.exit("错误：--text 为空")
+
+    dialect_opts = {
+        "language": args.lang, "gender": args.gender, "age": args.age,
+        "pitch": args.pitch, "voiceStyle": args.voice_style, "accent": args.accent,
+    }
+    given = {k: v for k, v in dialect_opts.items() if v}
+
+    if args.describe:
+        # 描述设计：engine=1，其余参数无意义
+        if given:
+            sys.exit(
+                f"错误：--describe 走描述设计（engine=1），"
+                f"{'/'.join(sorted(given))} 不会生效。二选一。"
+            )
+        payload = {"content": text, "engine": 1, "description": args.describe}
+    else:
+        if not given:
+            sys.exit("错误：请用 --describe 描述音色，或至少给一个方言设计参数（--lang/--gender/...）")
+        if args.accent and args.lang != "english":
+            sys.exit("错误：--accent 只在 --lang english 时可用")
+        payload = {"content": text, "engine": 2, **given}
+
+    data = request("POST", "/api/third/dubbing/create", body=payload)
+    dubb_id = data.get("dubbId")
+
+    deadline = time.time() + POLL_TIMEOUT
+    status = 1
+    while status not in (2, 3) and time.time() < deadline:
+        time.sleep(POLL_INTERVAL)
+        result = request("GET", "/api/third/dubbing/result", query={"dubbId": dubb_id})
+        status = result.get("status")
+
+    if status == 3:
+        sys.exit(f"声音设计失败（dubbId={dubb_id}）")
+    if status != 2:
+        sys.exit(f"声音设计超时，任务仍在处理：dubbId={dubb_id}")
+
+    url = result.get("voiceUrl")
+    # 设计结果只保留 1 天，且不会变成可复用音色，想留住就得下载
+    print(download(url, args.output) if args.output else url)
+
+
 def cmd_result(args):
     result = request("GET", "/api/third/tts/result", query={"taskId": args.task_id})
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -301,6 +352,20 @@ def main():
     p.add_argument("--style", choices=["1", "2", "3"], help="手动指定模型版本，一般不需要")
     p.add_argument("-o", "--output", help="保存到本地文件；不传则只打印 URL")
     p.set_defaults(func=cmd_tts)
+
+    p = sub.add_parser("design", help="声音设计：无需参考音频，描述或选方言参数直接生成音频")
+    p.add_argument("--text", required=True, help="要合成的文本，最长 1000 字节；传 - 表示从 stdin 读")
+    p.add_argument("--describe", help="音色描述，如「沉稳低沉的男声，语速偏慢」。与下面的方言参数二选一")
+    p.add_argument("--lang", help="语言/方言：sichuan/northeast/henan/... 或 chinese/cantonese/minnan/uyghur/english")
+    p.add_argument("--gender", choices=["male", "female"])
+    p.add_argument("--age", choices=["child", "teen", "youth", "middle_aged", "elderly"])
+    p.add_argument("--pitch", choices=["very_low", "low", "medium", "high", "very_high"])
+    p.add_argument("--voice-style", choices=["whisper"], help="留空=自然")
+    p.add_argument("--accent", choices=["american", "british", "australian", "canadian", "indian",
+                                        "chinese", "korean", "japanese", "portuguese", "russian"],
+                   help="英文口音，仅 --lang english 可用")
+    p.add_argument("-o", "--output", help="保存到本地文件；不传则只打印 URL（结果仅保留 1 天）")
+    p.set_defaults(func=cmd_design)
 
     p = sub.add_parser("result", help="按 taskId 查询合成结果")
     p.add_argument("task_id")

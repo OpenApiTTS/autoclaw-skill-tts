@@ -1,11 +1,11 @@
 ---
 name: openapi
-description: Use when the task needs text-to-speech / voice cloning / audio denoise via this voice open API — synthesizing speech from text, listing or uploading voice clone models (音色/参考音频), emotion-controlled TTS, dialect & multilingual TTS, or denoising an audio file. Covers auth (sign header), all /api/third/* endpoints, parameter rules, the polling workflow, and how to troubleshoot poor synthesis results (mispronunciation, odd pauses, voice not matching, flat emotion) instead of blindly retrying.
+description: Use when the task needs text-to-speech / voice cloning / voice design / audio denoise via this voice open API — synthesizing speech from text, listing or uploading voice clone models (音色/参考音频), emotion-controlled TTS, dialect & multilingual TTS, designing a brand-new voice from a text description or dialect parameters without any reference audio (声音设计), or denoising an audio file. Covers auth (sign header), all /api/third/* endpoints, parameter rules, the polling workflow, and how to troubleshoot poor synthesis results (mispronunciation, odd pauses, voice not matching, flat emotion) instead of blindly retrying.
 ---
 
 # OpenAPI (语音开放接口)
 
-TTS / 声音克隆 / 音频降噪 的 HTTP 接口。文本进，音频 URL 出。
+TTS / 声音克隆 / 声音设计 / 音频降噪 的 HTTP 接口。文本进，音频 URL 出。
 
 - **Base URL**: `https://openapi.anyvoice.cn`
 - **鉴权**: 每个请求带 header `sign: <API_KEY>`（也可用 query `?sign=`，但优先用 header）。API Key 是旗舰会员的密钥，向平台申请；过期或未开通 API 会返回「sign无效」/「旗舰会员已过期」。
@@ -36,6 +36,8 @@ python3 scripts/tts.py tts --text "今天天气不错" -o out.mp3       # 合成
 python3 scripts/tts.py tts --text "巴适得很" --lang sichuan -o out.mp3
 python3 scripts/tts.py tts --text "太好啦" --emotion happy=0.8 -o out.mp3
 python3 scripts/tts.py tts --text - -o out.mp3 < article.txt     # 长文本从 stdin
+python3 scripts/tts.py design --text "欢迎光临" --describe "沉稳低沉的男声，语速偏慢" -o out.mp3
+python3 scripts/tts.py design --text "巴适得很" --lang sichuan --gender female --age youth -o out.mp3
 python3 scripts/tts.py denoise --file noisy.wav -o clean.wav
 python3 scripts/tts.py upload-voice --file sample.wav --name "小王"
 ```
@@ -106,6 +108,46 @@ curl -H "sign: $VOICE_API_KEY" \
 | POST | `/reference/upload` | multipart：`file`(音频) + `name`(必填) + `describe`(选填)，返回 `audioId` |
 | DELETE | `/reference/delete?audioId=` | 删除音色 |
 
+### 声音设计（无需参考音频）
+
+不用任何参考音频，直接「描述一个声音」或「选方言参数」就能生成音色并合成这段文本。
+适合用户想要某种声音但手上没有音频素材的场景。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/dubbing/create` | 创建声音设计任务，返回 `dubbId` |
+| GET | `/dubbing/result?dubbId=` | 轮询结果，`status` 语义同 TTS（1/2/3），`status=2` 时有 `voiceUrl` |
+| GET | `/dubbing/list?page=1&pageSize=10` | 设计任务列表，`pageSize` 最大 30 |
+
+**和声音克隆的关键区别：声音设计只产出一段音频，不产出 `audioId`，音色无法复用、也不能拿去给别的文本合成。**
+结果（记录与音频）**只保留 1 天**，要留就及时下载。在途任务上限 5 个，`content` 上限 1000 字节。
+
+两种设计方式，用 `engine` 二选一：
+
+```jsonc
+// engine=1 描述设计（默认）：一句自然语言描述音色
+{ "content": "欢迎光临", "engine": 1, "description": "沉稳低沉的男声，语速偏慢" }
+
+// engine=2 方言设计：用枚举组合
+{ "content": "巴适得很", "engine": 2,
+  "language": "sichuan", "gender": "female", "age": "youth",
+  "pitch": "medium", "voiceStyle": "whisper", "accent": "american" }
+```
+
+- `language`：12 种中文方言 `sichuan northeast henan shaanxi guizhou yunnan guilin jinan shijiazhuang gansu ningxia qingdao`；
+  其他语言 `chinese`(普通话) `cantonese` `minnan` `uyghur` `english`；表外语言直接传英文语言名（如 `Thai`）
+- `gender`：`male` / `female`
+- `age`：`child` `teen` `youth` `middle_aged` `elderly`
+- `pitch`：`very_low` `low` `medium` `high` `very_high`
+- `voiceStyle`：留空=自然，`whisper`=耳语
+- `accent`：**仅 `language=english` 可用**，选中文方言时不能传。`american british australian canadian indian chinese korean japanese portuguese russian`
+
+坑：
+- `engine=2` 时如果**也传了 `description`**，服务端按整体描述原样下发，**其余枚举参数全被忽略** —— 别两边都填。
+- `engine=1` 时 `description` 必填。
+- **文案要用目标语言书写**：中文方言用普通话文案即可（模型负责转腔调），但粤语 / 维吾尔语 / 英文必须用该语言写；
+  闽南语只认**台罗拼音（Tâi-lô）**，写汉字不行。
+
 ### 情绪参考音频（临时文件）
 
 | 方法 | 路径 | 说明 |
@@ -165,7 +207,8 @@ Web 端情绪控制属专业会员能力；用旗舰会员 API Key 调本接口�
 ## 配额
 
 - 单次请求文本长度：有上限，按 **UTF-8 字节**计（一个汉字 3 字节），额度随账号而定，超出返回 `code=1001` —— 超了就拆分分段合成
-- 并发/在途任务数：默认 **30**（账号可加量）
+- 并发/在途任务数：默认 **30**（账号可加量）；降噪、声音设计各自另有 **5** 个在途上限
+- 声音设计：`content` 上限 1000 字节，结果保留 1 天
 - 列表类接口 `pageSize` 上限 30
 
 ## 轮询建议
@@ -184,6 +227,7 @@ Web 端情绪控制属专业会员能力；用旗舰会员 API Key 调本接口�
 | 停顿生硬、断句奇怪 | 在异常停顿处**增删标点**（逗号短停、句号长停），长句拆成短句 | 只改 `content`；长文按 150–250 字分段顺序合成 |
 | 念出了奇怪的符号 | 删掉表情符号、Markdown 标记、括号注释、连续空行等**不该念出来的字符** | 提交前先清洗 `content` |
 | 音色不像本人 | 换一段**底噪更小、空白更少**的参考音频，3–10 秒清晰干声最佳 | 先 `/denoise/upload` 降噪，再 `/reference/upload` 重建音色 |
+| 手上没有参考音频 | 问清想要什么样的声音（性别、年龄感、快慢、方言） | 走 `/dubbing/create` 声音设计；但提醒用户结果不可复用、只留 1 天 |
 | 语气太平、没有情绪 | 告诉用户可以直接指定情绪，不必在参考音频里演 | `style="2"` + `genre=1` 传 `ext` 情绪向量，或 `genre=2` 传 `emotionPath` |
 | 语速不合适 | 问清想要的快慢再整体调整 | `speed` 0.5–2.0（方言/多语言链路实际上限 1.5） |
 | 方言/外语读成了普通话 | 确认目标语种，提醒一段文本只写一种语言 | 显式传 `targetSpeech`，方言与小语种配 `style="3"` |
