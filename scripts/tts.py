@@ -11,7 +11,7 @@
   python3 tts.py denoise --file noisy.wav -o clean.wav
 
 设计原则：调用方只管"说什么、用谁的声音、什么语言、什么情绪"，
-style / genre / 轮询这些接口细节由本脚本推导，避免踩参数坑。
+style / genre / 建任务+轮询这些接口细节由本脚本处理，避免踩参数坑。
 """
 
 import argparse
@@ -217,7 +217,7 @@ def cmd_tts(args):
         payload["ext"] = ext
 
     try:
-        result = request("POST", "/api/third/tts/sync", body=payload)
+        result = request("POST", "/api/third/tts/create", body=payload)
     except ApiError as exc:
         if "暂不支持该语言" in str(exc):
             sys.exit(
@@ -229,9 +229,9 @@ def cmd_tts(args):
     task_id = result.get("taskId")
     status = result.get("status")
 
-    # sync 最多等 90 秒，超时会带 taskId 返回 status=1，这里继续兜底轮询
+    # create 立刻返回 taskId（status=1），结果靠轮询 /tts/result 拿
     deadline = time.time() + POLL_TIMEOUT
-    while status == 1 and time.time() < deadline:
+    while status not in (2, 3) and time.time() < deadline:
         time.sleep(POLL_INTERVAL)
         result = request("GET", "/api/third/tts/result", query={"taskId": task_id})
         status = result.get("status")
@@ -291,7 +291,7 @@ def main():
     p.add_argument("--describe", help="音色描述")
     p.set_defaults(func=cmd_upload_voice)
 
-    p = sub.add_parser("tts", help="文本转语音（同步，自动轮询到出结果）")
+    p = sub.add_parser("tts", help="文本转语音（异步创建任务并自动轮询到出结果）")
     p.add_argument("--text", required=True, help="要合成的文本，传 - 表示从 stdin 读")
     p.add_argument("--voice", help="音色 ID，不传则自动用列表里第一个")
     p.add_argument("--lang", help="目标语言/方言，如 mandarin/english/sichuan/yue/ja；不传则服务端按文本自动判定")

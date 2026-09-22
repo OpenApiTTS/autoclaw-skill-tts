@@ -41,7 +41,7 @@ python3 scripts/tts.py upload-voice --file sample.wav --name "小王"
 ```
 
 脚本会自动：按 `--lang` 推导 `style`、把 `--emotion` 转成 `genre=1`+`ext`、
-`sync` 超时后继续轮询 `result`、`-o` 时下载音频到本地并打印路径。
+创建任务后轮询 `result` 直到出结果、`-o` 时下载音频到本地并打印路径。
 不传 `-o` 只打印 URL，方便管道接后续处理。
 
 ## 直接调 HTTP（没有脚本执行能力时）
@@ -49,15 +49,18 @@ python3 scripts/tts.py upload-voice --file sample.wav --name "小王"
 合成一段语音的最短路径：
 
 1. `GET /api/third/reference/list` 拿到 `audioId`（声音模型 ID）
-2. `POST /api/third/tts/sync`，body 里 `audioId` = 上一步的 `audioId`
-3. 返回 `status=2` 时取 `voiceUrl` 即为音频地址
+2. `POST /api/third/tts/create`，body 里 `audioId` = 上一步的 `audioId`，立刻返回 `taskId`
+3. 每 2 秒轮询一次 `GET /api/third/tts/result?taskId=`，`status=2` 时取 `voiceUrl` 即为音频地址
 
-若 `sync` 返回 `status=1`（超过 90 秒仍在处理），拿 `taskId` 去轮询 `GET /api/third/tts/result`。
+合成是**纯异步**的，没有一次调用直接拿音频的同步接口；轮询期间不要重复创建任务。
 
 ```bash
-curl -X POST https://openapi.anyvoice.cn/api/third/tts/sync \
+curl -X POST https://openapi.anyvoice.cn/api/third/tts/create \
   -H "sign: $VOICE_API_KEY" -H "Content-Type: application/json" \
   -d '{"content":"今天天气不错","audioId":"<audioId>","style":"2","speed":1.0,"targetSpeech":"mandarin"}'
+
+curl -H "sign: $VOICE_API_KEY" \
+  "https://openapi.anyvoice.cn/api/third/tts/result?taskId=<taskId>"
 ```
 
 ## 接口清单
@@ -68,12 +71,11 @@ curl -X POST https://openapi.anyvoice.cn/api/third/tts/sync \
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/tts/sync` | **首选**。同步合成，服务端内部最多轮询 90s，一次调用拿结果 |
-| POST | `/tts/create` | 异步创建任务，立刻返回 `taskId` |
+| POST | `/tts/create` | 创建合成任务，立刻返回 `taskId`（合成入口只有这一个） |
 | GET | `/tts/result?taskId=` | 查询任务结果 |
 | GET | `/tts/list?page=1&pageSize=10` | 合成历史列表，`pageSize` 最大 30 |
 
-`/tts/sync` 和 `/tts/create` 的请求体相同：
+`/tts/create` 请求体：
 
 ```jsonc
 {
@@ -168,7 +170,7 @@ Web 端情绪控制属专业会员能力；用旗舰会员 API Key 调本接口�
 
 ## 轮询建议
 
-用 `/tts/create` 时，建议 2 秒一次轮询 `/tts/result`，直到 `status` 变为 2 或 3。`/tts/sync` 内部就是这个逻辑（2s 间隔、90s 上限），超时会带着 `taskId` 返回 `status=1`，此时继续用 `/tts/result` 兜底，不要重复创建任务。
+`/tts/create` 返回后建议 2 秒一次轮询 `/tts/result`，直到 `status` 变为 2 或 3。长文本可能需要几十秒到数分钟，**只要 `status` 还是 1 就继续等，不要重复创建任务**（在途任务数有上限）。
 
 
 ## 合成效果排查（结果不理想时必读）
@@ -178,7 +180,7 @@ Web 端情绪控制属专业会员能力；用旗舰会员 API Key 调本接口�
 
 | 现象 | 告诉用户怎么改 | 接口侧怎么配合 |
 |---|---|---|
-| 某个字念错、多音字读错 | 把生僻字/多音字换成**同音字**；数字、单位、英文缩写改成汉字写法（「2026 年」→「二零二六年」，「3kg」→「三公斤」） | 只改 `content`，其余参数不动，重调 `/tts/sync` |
+| 某个字念错、多音字读错 | 把生僻字/多音字换成**同音字**；数字、单位、英文缩写改成汉字写法（「2026 年」→「二零二六年」，「3kg」→「三公斤」） | 只改 `content`，其余参数不动，重新 `/tts/create` |
 | 停顿生硬、断句奇怪 | 在异常停顿处**增删标点**（逗号短停、句号长停），长句拆成短句 | 只改 `content`；长文按 150–250 字分段顺序合成 |
 | 念出了奇怪的符号 | 删掉表情符号、Markdown 标记、括号注释、连续空行等**不该念出来的字符** | 提交前先清洗 `content` |
 | 音色不像本人 | 换一段**底噪更小、空白更少**的参考音频，3–10 秒清晰干声最佳 | 先 `/denoise/upload` 降噪，再 `/reference/upload` 重建音色 |
